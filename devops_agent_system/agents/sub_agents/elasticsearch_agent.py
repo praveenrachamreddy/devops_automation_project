@@ -44,6 +44,12 @@ class ElasticsearchAgent(BaseAgent):
         if self.config and 'agent_settings' in self.config:
             model = self.config['agent_settings'].get('model', model)
             
+        # Get Elasticsearch configuration from config
+        es_config = self.config.get('elasticsearch_settings', {})
+        es_url = es_config.get('url', 'http://localhost:9200')
+        es_username = es_config.get('username', 'elastic')
+        es_password = es_config.get('password', 'changeme')
+        
         return Agent(
             model=model,
             name=self.name,
@@ -72,9 +78,16 @@ Always explain your approach and the insights you derive from the log data.
                     connection_params=StdioServerParameters(
                         command="podman",
                         args=[
-                            "exec", "-i", "elasticsearch-mcp",
-                            "/elasticsearch-mcp-server", "stdio"
-                        ]
+                            "run", "-i", "--rm",
+                            "-e", "ES_URL", "-e", "ES_USERNAME", "-e", "ES_PASSWORD",
+                            "docker.elastic.co/mcp/elasticsearch:0.4.0",
+                            "stdio"
+                        ],
+                        env={
+                            "ES_URL": es_url,
+                            "ES_USERNAME": es_username,
+                            "ES_PASSWORD": es_password
+                        }
                     )
                 )
             ],

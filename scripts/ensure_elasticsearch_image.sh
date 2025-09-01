@@ -6,11 +6,11 @@ IMAGE_NAME="docker.elastic.co/mcp/elasticsearch:0.4.0"
 echo "Checking if Elasticsearch MCP Docker image is available locally..."
 
 # Check if image exists locally
-if podman images | grep -q "docker.elastic.co/mcp/elasticsearch.*0.4.0"; then
+if docker images | grep -q "docker.elastic.co/mcp/elasticsearch.*0.4.0"; then
     echo "✅ Elasticsearch MCP Docker image is already available locally"
 else
     echo "🔄 Elasticsearch MCP Docker image not found locally, pulling..."
-    podman pull $IMAGE_NAME
+    docker pull $IMAGE_NAME
     
     if [ $? -eq 0 ]; then
         echo "✅ Successfully pulled Elasticsearch MCP Docker image"

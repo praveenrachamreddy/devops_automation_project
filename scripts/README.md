@@ -17,24 +17,10 @@ Ensures that the Elasticsearch MCP Docker image is available locally before star
 scripts\ensure_elasticsearch_image.bat
 ```
 
-### start_elasticsearch_mcp.sh / start_elasticsearch_mcp.bat
-Starts the Elasticsearch MCP server in HTTP mode using podman.
-
-**Usage (Linux/Mac):**
-```bash
-./scripts/start_elasticsearch_mcp.sh
-```
-
-**Usage (Windows):**
-```cmd
-scripts\start_elasticsearch_mcp.bat
-```
-
 This script will:
-1. Stop any existing elasticsearch-mcp container
-2. Start a new container with the Elasticsearch MCP server
-3. Configure it to connect to your Elasticsearch instance
-4. Expose the MCP server on port 8080
+1. Check if the `docker.elastic.co/mcp/elasticsearch:0.4.0` image is available locally
+2. If not found, it will pull the image from Docker Hub
+3. Confirm when the image is ready for use
 
 ## Running the DevOps Automation Assistant
 
@@ -43,12 +29,7 @@ This script will:
    ./scripts/ensure_elasticsearch_image.sh
    ```
 
-2. Start the Elasticsearch MCP server:
-   ```bash
-   ./scripts/start_elasticsearch_mcp.sh
-   ```
-
-3. Then start the ADK web interface:
+2. Then start the ADK web interface:
    ```bash
    adk web
    ```
