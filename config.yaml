@@ -46,8 +46,8 @@ devops_settings:
 
 # Elasticsearch settings for log analysis
 elasticsearch_settings:
-  url: "http://localhost:9200"
+  url: "https://praveen.elkserver.imss.com:9200"
   username: "elastic"
-  password: "changeme"
+  password: "hlLWmR*tnDVMKkvR80ws"
   # For SSL connections, you might need:
   # ssl_skip_verify: true
