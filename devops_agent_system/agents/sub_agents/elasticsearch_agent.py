@@ -80,7 +80,7 @@ Always explain your approach and the insights you derive from the log data.
                         args=[
                             "run", "-i", "--rm",
                             "-e", "ES_URL", "-e", "ES_USERNAME", "-e", "ES_PASSWORD",
-                            "docker.elastic.co/mcp/elasticsearch:latest",
+                            "docker.elastic.co/mcp/elasticsearch:0.4.0",
                             "stdio"
                         ],
                         env={
