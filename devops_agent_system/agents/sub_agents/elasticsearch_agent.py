@@ -21,7 +21,10 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from google.adk.agents import Agent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioConnectionParams, StdioServerParameters
+# from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+# from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+# from mcp import StdioServerParameters
 
 # Import the base agent
 from agents.base_agent import BaseAgent
@@ -75,24 +78,22 @@ Always explain your approach and the insights you derive from the log data.
 """,
             tools=[
                 MCPToolset(
-                    connection_params=StdioServerParameters(
-                        command="docker",
-                        args=[
-                            "run", "-i", "--rm",
-                            "-e", "ES_URL", "-e", "ES_USERNAME", "-e", "ES_PASSWORD",
-                            "docker.elastic.co/mcp/elasticsearch:0.4.0",
-                            "stdio"
-                        ],
-                        env={
-                            "ES_URL": es_url,
-                            "ES_USERNAME": es_username,
-                            "ES_PASSWORD": es_password
-                        }
-                    )
+                    connection_params=StdioConnectionParams(
+                        server_params=StdioServerParameters(
+                            command='npx',
+                            args=["-y", "@elastic/mcp-server-elasticsearch"],
+                            env={
+                                "ES_URL": es_url,
+                                "ES_USERNAME": es_username,
+                                "ES_PASSWORD": es_password,
+                                "OTEL_LOG_LEVEL": "none"  # Optional: Suppress telemetry logs
+                            }
+                        ),
+                    ),
+                    tool_filter=None  # Optional: Filter to specific tools, e.g., ['list_indices', 'search']
                 )
             ],
         )
-
 
 # Create an instance of the Elasticsearch agent
 elasticsearch_agent = ElasticsearchAgent()
