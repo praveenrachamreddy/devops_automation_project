@@ -1,0 +1,53 @@
+agent_settings:
+  model: "gemini-2.0-flash"
+  # model: "gemini-2.0-flash-live-001"
+  # For audio streaming, we need a model that supports the Gemini Live API
+  streaming_model: "gemini-2.0-flash-live-001"
+
+# DevOps tool configurations will be added here as we implement them
+devops_settings:
+  # Placeholder for CI/CD settings
+  cicd:
+    # Example for Jenkins
+    # jenkins_url: "http://your-jenkins-url"
+    # jenkins_username: "your-username"
+    # jenkins_api_token: "your-api-token"
+    
+    # Example for GitHub Actions
+    # github_token: "your-github-token"
+  
+  # Placeholder for infrastructure settings
+  infrastructure:
+    # Example for Terraform
+    # terraform_path: "/usr/local/bin/terraform"
+    
+    # Example for cloud providers
+    # aws_access_key_id: "your-aws-access-key"
+    # aws_secret_access_key: "your-aws-secret-key"
+    # gcp_service_account_key: "path/to/service-account-key.json"
+    # azure_subscription_id: "your-azure-subscription-id"
+  
+  # Placeholder for monitoring settings
+  monitoring:
+    # Example for Prometheus
+    # prometheus_url: "http://your-prometheus-url"
+    
+    # Example for Grafana
+    # grafana_url: "http://your-grafana-url"
+    # grafana_api_key: "your-grafana-api-key"
+  
+  # Placeholder for deployment settings
+  deployment:
+    # Example for Kubernetes
+    # kubeconfig_path: "~/.kube/config"
+    
+    # Example for Docker
+    # docker_host: "unix:///var/run/docker.sock"
+
+# Elasticsearch settings for log analysis
+elasticsearch_settings:
+  url: "http://localhost:9200"
+  username: "elastic"
+  password: "changeme"
+  # For SSL connections, you might need:
+  # ssl_skip_verify: true
