@@ -21,7 +21,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from google.adk.agents import Agent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, HttpServerParameters
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioServerParameters
 
 # Import the base agent
 from agents.base_agent import BaseAgent
@@ -69,8 +69,12 @@ Always explain your approach and the insights you derive from the log data.
 """,
             tools=[
                 MCPToolset(
-                    connection_params=HttpServerParameters(
-                        url="http://localhost:8080/mcp"
+                    connection_params=StdioServerParameters(
+                        command="podman",
+                        args=[
+                            "exec", "-i", "elasticsearch-mcp",
+                            "/elasticsearch-mcp-server", "stdio"
+                        ]
                     )
                 )
             ],
