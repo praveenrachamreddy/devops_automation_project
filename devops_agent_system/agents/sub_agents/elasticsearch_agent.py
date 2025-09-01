@@ -88,7 +88,9 @@ Always explain your approach and the insights you derive from the log data.
                             "ES_USERNAME": es_username,
                             "ES_PASSWORD": es_password
                         }
-                    )
+                    ),
+                    # Increase timeout to allow for Docker operations
+                    tool_call_timeout=30.0
                 )
             ],
         )
