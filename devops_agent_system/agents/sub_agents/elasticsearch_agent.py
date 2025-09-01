@@ -76,7 +76,7 @@ Always explain your approach and the insights you derive from the log data.
             tools=[
                 MCPToolset(
                     connection_params=StdioServerParameters(
-                        command="podman",
+                        command="docker",
                         args=[
                             "run", "-i", "--rm",
                             "-e", "ES_URL", "-e", "ES_USERNAME", "-e", "ES_PASSWORD",
