@@ -90,7 +90,14 @@ devops_automation_project/
 ## Using the System
 
 ### Method 1: ADK Web Interface (Recommended)
-1. Ensure the Elasticsearch MCP Docker image is available (see scripts/README.md):
+1. Ensure Docker is installed and running:
+   ```bash
+   systemctl status docker
+   # If not running:
+   sudo systemctl start docker
+   ```
+
+2. Ensure the Elasticsearch MCP Docker image is available (see scripts/README.md):
    ```bash
    # On Linux/Mac:
    ./scripts/ensure_elasticsearch_image.sh
@@ -99,13 +106,13 @@ devops_automation_project/
    scripts\ensure_elasticsearch_image.bat
    ```
 
-2. Start the ADK web interface:
+3. Start the ADK web interface:
    ```bash
    adk web
    ```
 
-3. Open your browser to the provided URL
-4. Select the DevOpsOrchestratorAgent from the dropdown menu
+4. Open your browser to the provided URL
+5. Select the DevOpsOrchestratorAgent from the dropdown menu
 
 ### Method 2: ADK CLI
 Run the agent directly from command line:
@@ -180,23 +187,20 @@ The DevOps Automation Assistant includes an ElasticsearchAgent that connects to 
 2. Docker (to run the Elasticsearch MCP server)
 
 ### Setup
-1. Run the utility script to ensure the Elasticsearch MCP image is available:
+1. Ensure Docker is running:
+   ```bash
+   systemctl status docker
+   # If not running:
+   sudo systemctl start docker
+   ```
+
+2. Run the utility script to ensure the Elasticsearch MCP image is available:
    ```bash
    # On Linux/Mac:
    ./scripts/ensure_elasticsearch_image.sh
    
    # On Windows:
    scripts\ensure_elasticsearch_image.bat
-   ```
-
-2. Run the Elasticsearch MCP server:
-   ```bash
-   docker run -d --name elasticsearch-mcp \
-     -e ES_URL=http://your-elasticsearch-host:9200 \
-     -e ES_USERNAME=your-username \
-     -e ES_PASSWORD=your-password \
-     -p 8080:8080 \
-     docker.elastic.co/mcp/elasticsearch:0.4.0 http
    ```
 
 3. Update the Elasticsearch settings in `config.yaml` with your Elasticsearch connection details.
@@ -208,6 +212,8 @@ The ElasticsearchAgent provides access to these tools:
 - `search`: Perform an Elasticsearch search with the provided query DSL
 - `esql`: Perform an ES|QL query
 - `get_shards`: Get shard information for all or specific indices
+
+The Elasticsearch MCP server Docker image will be automatically downloaded when the agent is first used.
 
 ## Testing
 
@@ -230,7 +236,7 @@ python test_imports.py
 1. Use ADK web interface instead of programmatic access for better compatibility
 2. Verify all required environment variables are set
 3. Ensure only one agent is exported as `root_agent` in `agent.py`
-4. Check that the Elasticsearch MCP server is running and accessible
+4. Check that Docker is running and accessible
 5. Run the utility scripts in the `scripts/` directory to ensure Docker images are available locally
 
 ## Next Steps
