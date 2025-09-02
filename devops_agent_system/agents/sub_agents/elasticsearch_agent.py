@@ -21,10 +21,9 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from google.adk.agents import Agent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioConnectionParams, StdioServerParameters
-# from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-# from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
-# from mcp import StdioServerParameters
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from mcp import StdioServerParameters
 
 # Import the base agent
 from agents.base_agent import BaseAgent
@@ -46,19 +45,19 @@ class ElasticsearchAgent(BaseAgent):
         model = "gemini-2.0-flash"
         if self.config and 'agent_settings' in self.config:
             model = self.config['agent_settings'].get('model', model)
-            
+
         # Get Elasticsearch configuration from config
         es_config = self.config.get('elasticsearch_settings', {})
         es_url = es_config.get('url', 'http://localhost:9200')
         es_username = es_config.get('username', 'elastic')
         es_password = es_config.get('password', 'changeme')
-        
+
         return Agent(
             model=model,
             name=self.name,
             instruction=f"""You are {self.name}, {self.description}.
-            
-Your task is to help users analyze logs stored in Elasticsearch. You have access to an Elasticsearch MCP server 
+
+Your task is to help users analyze logs stored in Elasticsearch. You have access to an Elasticsearch MCP server
 that provides the following tools:
 
 1. `list_indices` - List all available Elasticsearch indices
@@ -81,7 +80,7 @@ Always explain your approach and the insights you derive from the log data.
                     connection_params=StdioConnectionParams(
                         server_params=StdioServerParameters(
                             command='npx',
-                            args=["-y", "@elastic/mcp-server-elasticsearch"],
+                            args=["-y", "@elastic/mcp-server-elasticsearch@0.3.1"],
                             env={
                                 "ES_URL": es_url,
                                 "ES_USERNAME": es_username,
@@ -94,6 +93,7 @@ Always explain your approach and the insights you derive from the log data.
                 )
             ],
         )
+
 
 # Create an instance of the Elasticsearch agent
 elasticsearch_agent = ElasticsearchAgent()
