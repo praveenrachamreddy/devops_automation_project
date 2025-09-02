@@ -5,6 +5,7 @@
 
 import os
 import sys
+import base64
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -30,6 +31,16 @@ class ElasticsearchAgent(BaseAgent):
         if self.config and "agent_settings" in self.config:
             model = self.config["agent_settings"].get("model", model)
 
+        # Get Elasticsearch credentials from config
+        es_config = self.config.get('elasticsearch_settings', {})
+        es_username = es_config.get('username', 'elastic')
+        es_password = es_config.get('password', 'changeme')
+        
+        # Create basic auth header for the MCP server
+        credentials = f"{es_username}:{es_password}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        auth_header = f"Basic {encoded_credentials}"
+
         return Agent(
             model=model,
             name=self.name,
@@ -54,7 +65,9 @@ Explain your reasoning along the way.
                 MCPToolset(
                     connection_params=SseConnectionParams(
                         url="http://localhost:8080/mcp",
-                        headers=None
+                        headers={
+                            "Authorization": auth_header
+                        }
                     )
                 )
             ],
