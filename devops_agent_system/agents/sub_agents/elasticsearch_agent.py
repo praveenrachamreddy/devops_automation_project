@@ -80,6 +80,7 @@ Explain your reasoning along the way.
                             ],
                             env=env_vars
                         ),
+                        timeout=120.0  # Increase timeout to 120 seconds
                     ),
                     # Optional: Filter which tools from the MCP server are exposed
                     # tool_filter=['list_indices', 'search', 'esql']
