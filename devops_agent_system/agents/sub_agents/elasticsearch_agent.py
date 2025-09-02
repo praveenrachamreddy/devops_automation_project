@@ -1,31 +1,31 @@
 # Copyright 2025 Praveen Rachamreddy
 # Licensed under the Apache License, Version 2.0
 
-"""Elasticsearch Agent – connects to an *already running* MCP server."""
+"""Elasticsearch Agent - connects to Elasticsearch MCP server via npx."""
 
 import os
 import sys
-import base64
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from google.adk.agents import Agent
+from google.adk.agents import LlmAgent
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from mcp import StdioServerParameters
 
 from agents.base_agent import BaseAgent
 
 
 class ElasticsearchAgent(BaseAgent):
-    """Agent that talks to an external MCP server over HTTP/SSE."""
+    """Agent that connects to Elasticsearch MCP server via npx."""
 
     def __init__(self):
         super().__init__(
             name="ElasticsearchAgent",
-            description="A log-analysis specialist that queries your running Elasticsearch cluster."
+            description="A log-analysis specialist that queries your Elasticsearch cluster."
         )
 
-    def create_agent(self) -> Agent:
+    def create_agent(self) -> LlmAgent:
         # choose model from config if provided
         model = "gemini-2.0-flash"
         if self.config and "agent_settings" in self.config:
@@ -33,18 +33,14 @@ class ElasticsearchAgent(BaseAgent):
 
         # Get Elasticsearch credentials from config
         es_config = self.config.get('elasticsearch_settings', {})
+        es_url = es_config.get('url', 'http://localhost:9200')
         es_username = es_config.get('username', 'elastic')
         es_password = es_config.get('password', 'changeme')
         ssl_skip_verify = es_config.get('ssl_skip_verify', False)
-        
-        # Create basic auth header for the MCP server
-        credentials = f"{es_username}:{es_password}"
-        encoded_credentials = base64.b64encode(credentials.encode()).decode()
-        auth_header = f"Basic {encoded_credentials}"
 
         # Prepare environment variables for the MCP server
         env_vars = {
-            "ES_URL": es_config.get('url', 'http://localhost:9200'),
+            "ES_URL": es_url,
             "ES_USERNAME": es_username,
             "ES_PASSWORD": es_password
         }
@@ -53,7 +49,7 @@ class ElasticsearchAgent(BaseAgent):
         if ssl_skip_verify:
             env_vars["ES_SSL_SKIP_VERIFY"] = "true"
 
-        return Agent(
+        return LlmAgent(
             model=model,
             name=self.name,
             instruction=f"""You are {self.name}, {self.description}.
@@ -75,12 +71,18 @@ Explain your reasoning along the way.
 """,
             tools=[
                 MCPToolset(
-                    connection_params=SseConnectionParams(
-                        url="http://localhost:8080/mcp",
-                        headers={
-                            "Authorization": auth_header
-                        }
-                    )
+                    connection_params=StdioConnectionParams(
+                        server_params=StdioServerParameters(
+                            command='npx',
+                            args=[
+                                "-y",  # Argument for npx to auto-confirm install
+                                "@elastic/mcp-server-elasticsearch@0.3.1"
+                            ],
+                            env=env_vars
+                        ),
+                    ),
+                    # Optional: Filter which tools from the MCP server are exposed
+                    # tool_filter=['list_indices', 'search', 'esql']
                 )
             ],
         )
