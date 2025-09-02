@@ -35,11 +35,23 @@ class ElasticsearchAgent(BaseAgent):
         es_config = self.config.get('elasticsearch_settings', {})
         es_username = es_config.get('username', 'elastic')
         es_password = es_config.get('password', 'changeme')
+        ssl_skip_verify = es_config.get('ssl_skip_verify', False)
         
         # Create basic auth header for the MCP server
         credentials = f"{es_username}:{es_password}"
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
         auth_header = f"Basic {encoded_credentials}"
+
+        # Prepare environment variables for the MCP server
+        env_vars = {
+            "ES_URL": es_config.get('url', 'http://localhost:9200'),
+            "ES_USERNAME": es_username,
+            "ES_PASSWORD": es_password
+        }
+        
+        # Add SSL skip verify if enabled
+        if ssl_skip_verify:
+            env_vars["ES_SSL_SKIP_VERIFY"] = "true"
 
         return Agent(
             model=model,

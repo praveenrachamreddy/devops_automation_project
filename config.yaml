@@ -50,4 +50,4 @@ elasticsearch_settings:
   username: "elastic"
   password: "hlLWmR*tnDVMKkvR80ws"
   # For SSL connections, you might need:
-  # ssl_skip_verify: true
+  ssl_skip_verify: true
