@@ -20,7 +20,7 @@ import os
 # Add the parent directory to the path so we can import base_agent
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from google.adk.agents import Agent
+from google.adk.agents import LlmAgent
 from google.adk.code_executors import BuiltInCodeExecutor
 
 # Import the base agent
@@ -37,14 +37,14 @@ class CodingAgent(BaseAgent):
             description="A coding specialist. Use this for math, logic, or coding tasks."
         )
 
-    def create_agent(self) -> Agent:
+    def create_agent(self) -> LlmAgent:
         """Create and return the coding agent."""
         # Use default model if config is empty
         model = "gemini-2.0-flash"
         if self.config and 'agent_settings' in self.config:
             model = self.config['agent_settings'].get('model', model)
             
-        return Agent(
+        return LlmAgent(
             model=model,
             name=self.name,
             instruction=self.get_system_prompt(),
