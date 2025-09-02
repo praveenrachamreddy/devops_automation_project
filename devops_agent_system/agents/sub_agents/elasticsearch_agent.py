@@ -1,99 +1,65 @@
 # Copyright 2025 Praveen Rachamreddy
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Licensed under the Apache License, Version 2.0
 
-"""Elasticsearch Agent - Specialized for log analysis using Elasticsearch MCP server."""
+"""Elasticsearch Agent – connects to an *already running* MCP server."""
 
-import sys
 import os
+import sys
 
-# Add the parent directory to the path so we can import base_agent
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from google.adk.agents import Agent
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
-from mcp import StdioServerParameters
+from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 
-# Import the base agent
 from agents.base_agent import BaseAgent
 
 
 class ElasticsearchAgent(BaseAgent):
-    """Agent specialized in Elasticsearch log analysis using MCP server."""
+    """Agent that talks to an external MCP server over HTTP/SSE."""
 
     def __init__(self):
-        """Initialize the Elasticsearch agent."""
         super().__init__(
             name="ElasticsearchAgent",
-            description="A log analysis specialist that uses Elasticsearch to search and analyze logs."
+            description="A log-analysis specialist that queries your running Elasticsearch cluster."
         )
 
     def create_agent(self) -> Agent:
-        """Create and return the Elasticsearch agent with MCP toolset."""
-        # Use default model if config is empty
+        # choose model from config if provided
         model = "gemini-2.0-flash"
-        if self.config and 'agent_settings' in self.config:
-            model = self.config['agent_settings'].get('model', model)
-
-        # Get Elasticsearch configuration from config
-        es_config = self.config.get('elasticsearch_settings', {})
-        es_url = es_config.get('url', 'http://localhost:9200')
-        es_username = es_config.get('username', 'elastic')
-        es_password = es_config.get('password', 'changeme')
+        if self.config and "agent_settings" in self.config:
+            model = self.config["agent_settings"].get("model", model)
 
         return Agent(
             model=model,
             name=self.name,
             instruction=f"""You are {self.name}, {self.description}.
 
-Your task is to help users analyze logs stored in Elasticsearch. You have access to an Elasticsearch MCP server
-that provides the following tools:
+You have access to the following MCP tools backed by Elasticsearch:
+- list_indices
+- get_mappings
+- search (Query DSL)
+- esql
+- get_shards
 
-1. `list_indices` - List all available Elasticsearch indices
-2. `get_mappings` - Get field mappings for a specific Elasticsearch index
-3. `search` - Perform an Elasticsearch search with the provided query DSL
-4. `esql` - Perform an ES|QL query
-5. `get_shards` - Get shard information for all or specific indices
+Steps when answering user questions:
+1. Use list_indices with a suitable pattern to find relevant indices.
+2. Use get_mappings to understand the data structure.
+3. Formulate precise queries with search or esql.
+4. Summarise findings clearly.
 
-When helping users with log analysis:
-
-1. First, identify the relevant indices using `list_indices` with an appropriate pattern
-2. Understand the structure of the data using `get_mappings` on the relevant index
-3. Formulate specific queries using either `search` (for complex Query DSL) or `esql` (for simpler queries)
-4. Interpret the results and provide meaningful insights to the user
-
-Always explain your approach and the insights you derive from the log data.
+Explain your reasoning along the way.
 """,
             tools=[
                 MCPToolset(
-                    connection_params=StdioConnectionParams(
-                        server_params=StdioServerParameters(
-                            command='npx',
-                            args=["-y", "@elastic/mcp-server-elasticsearch@0.3.1"],
-                            env={
-                                "ES_URL": es_url,
-                                "ES_USERNAME": es_username,
-                                "ES_PASSWORD": es_password,
-                                "OTEL_LOG_LEVEL": "none"  # Optional: Suppress telemetry logs
-                            }
-                        ),
-                    ),
-                    tool_filter=None  # Optional: Filter to specific tools, e.g., ['list_indices', 'search']
+                    connection_params=SseConnectionParams(
+                        url="http://localhost:8080/mcp",
+                        headers=None
+                    )
                 )
             ],
         )
 
 
-# Create an instance of the Elasticsearch agent
+# Singleton ready to import elsewhere
 elasticsearch_agent = ElasticsearchAgent()
