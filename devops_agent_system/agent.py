@@ -31,7 +31,7 @@ sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'agents'))
 sys.path.insert(0, os.path.join(project_root, 'agents', 'sub_agents'))
 
-from google.adk.agents import Agent, SequentialAgent
+from google.adk.agents import LlmAgent, SequentialAgent
 from google.adk.tools import agent_tool
 from google.adk.code_executors import BuiltInCodeExecutor
 
@@ -71,7 +71,7 @@ from agents.sub_agents.search_agent import search_agent
 from agents.sub_agents.elasticsearch_agent import elasticsearch_agent
 
 # An agent that can only execute code.
-coding_agent = Agent(
+coding_agent = LlmAgent(
     name="CodingAgent",
     model=model_name,
     description="A coding specialist. Use this for math, logic, or coding tasks.",
@@ -89,7 +89,7 @@ coding_agent = Agent(
 # =============================================================================
 
 # This root agent uses the hybrid model of orchestration.
-root_agent = Agent(
+root_agent = LlmAgent(
     name="DevOpsOrchestratorAgent",
     model=model_name,
     instruction="""You are a master DevOps orchestrator. Delegate tasks as follows:
