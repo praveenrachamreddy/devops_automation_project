@@ -12,15 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Base Agent Class - Provides common functionality for all agents."""
+"""Base Agent Class - Provides common functionality for all agents following Google ADK patterns."""
 
 import sys
 import os
 import yaml
 import logging
+from abc import ABC, abstractmethod
+from typing import Optional, Dict, Any
 
 from google.adk.agents import Agent
-from google.adk.tools import google_search
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -36,11 +37,16 @@ sys.path.insert(0, os.path.join(project_root, 'agents', 'sub_agents'))
 sys.path.insert(0, os.path.join(project_root, 'tools'))
 
 
-class BaseAgent:
-    """Base class for all agents in the DevOps Automation Assistant."""
+class BaseAgent(ABC):
+    """Base class for all agents in the DevOps Automation Assistant following Google ADK patterns.
+    
+    This class provides common functionality and structure for all specialized agents.
+    It handles configuration loading, logging, and defines the interface that all
+    agents must implement.
+    """
 
     def __init__(self, name: str, description: str):
-        """Initialize the base agent.
+        """Initialize the base agent with common functionality.
         
         Args:
             name: The name of the agent
@@ -51,7 +57,9 @@ class BaseAgent:
         self.logger = logging.getLogger(f"{__name__}.{name}")
         
         # Load configuration
-        config_path = os.path.join(parent_dir, 'config.yaml')
+        # The config.yaml file is in the project root, not in the devops_agent_system directory
+        project_root = os.path.dirname(parent_dir)
+        config_path = os.path.join(project_root, 'config.yaml')
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 self.config = yaml.safe_load(f)
@@ -66,40 +74,45 @@ class BaseAgent:
         """Get the system prompt for the agent.
         
         Returns:
-            The system prompt string
+            The system prompt string that defines the agent's behavior
         """
         return f"You are {self.name}, {self.description}."
 
-    def get_input_schema(self):
+    def get_input_schema(self) -> Optional[Dict[str, Any]]:
         """Get the input schema for the agent (if any).
         
         Returns:
-            None by default (no input schema)
+            Dictionary defining the expected input structure, or None if no schema
         """
         return None
 
-    def get_output_schema(self):
+    def get_output_schema(self) -> Optional[Dict[str, Any]]:
         """Get the output schema for the agent (if any).
         
         Returns:
-            None by default (no output schema)
+            Dictionary defining the output structure, or None if no schema
         """
         return None
 
-    def get_tools(self):
-        """Get the base tools available to all agents.
+    def get_default_model(self) -> str:
+        """Get the default model name from configuration.
         
         Returns:
-            List of base tools
+            Model name string
         """
-        # All agents get the google_search tool by default
-        # We'll add save_note in the actual agent implementations to avoid circular imports
-        return [google_search]
+        model = "gemini-2.0-flash"
+        if self.config and 'agent_settings' in self.config:
+            model = self.config['agent_settings'].get('model', model)
+        return model
 
+    @abstractmethod
     def create_agent(self) -> Agent:
-        """Create and return the ADK agent.
+        """Create and return the Google ADK agent.
+        
+        This method must be implemented by all subclasses to create and configure
+        the specific agent with its tools, instructions, and other properties.
         
         Returns:
-            Configured ADK Agent instance
+            Configured Google ADK Agent instance
         """
-        raise NotImplementedError("Subclasses must implement create_agent method")
+        pass

@@ -69,20 +69,23 @@ model_name = config['agent_settings']['model']
 # Import the simple, single-purpose agents
 from agents.sub_agents.search_agent import search_agent
 from agents.sub_agents.elasticsearch_agent import elasticsearch_agent
+from agents.sub_agents.coding_agent import coding_agent
+from agents.sub_agents.simple_mcp_agent import simple_mcp_agent
+from agents.sub_agents.kubectl_ai_agent import kubectl_ai_agent
+from agents.sub_agents.monitoring_agent import monitoring_agent
 
-# An agent that can only execute code.
-coding_agent = LlmAgent(
-    name="CodingAgent",
-    model=model_name,
-    description="A coding specialist. Use this for math, logic, or coding tasks.",
-    code_executor=BuiltInCodeExecutor(),
-)
+# Create instances of the specialized agents
+search_agent_instance = search_agent.create_agent()
 
-# TODO: Import the complex workflow agents when they are implemented
-# from agents.sub_agents.cicd_agent import cicd_agent
-# from agents.sub_agents.infrastructure_agent import infrastructure_agent
-# from agents.sub_agents.monitoring_agent import monitoring_agent
-# from agents.sub_agents.deployment_agent import deployment_agent
+coding_agent_instance = coding_agent.create_agent()
+
+elasticsearch_agent_instance = elasticsearch_agent.create_agent()
+
+simple_mcp_agent_instance = simple_mcp_agent.create_agent()
+
+kubectl_ai_agent_instance = kubectl_ai_agent.create_agent()
+
+monitoring_agent_instance = monitoring_agent.create_agent()
 
 # =============================================================================
 # 2. DEFINE THE ORCHESTRATOR (ROOT AGENT)
@@ -92,26 +95,44 @@ coding_agent = LlmAgent(
 root_agent = LlmAgent(
     name="DevOpsOrchestratorAgent",
     model=model_name,
-    instruction="""You are a master DevOps orchestrator. Delegate tasks as follows:
-- For quick searches (e.g., 'search for X'), use the SearchAgent tool.
-- For math, logic, or coding tasks (e.g., 'calculate X' or 'write code for Y'), use the CodingAgent tool.
-- For log analysis and Elasticsearch queries, use the ElasticsearchAgent tool.
-- For CI/CD operations, transfer to CICDPipelineAgent.
-- For infrastructure provisioning, transfer to InfrastructureAgent.
-- For monitoring tasks, transfer to MonitoringAgent.
-- For deployment operations, transfer to DeploymentAgent.
+    instruction="""You are a master DevOps orchestrator. Your job is to delegate tasks to the most appropriate agent.
 
-If unsure, ask the user for clarification.""",
+When a user asks a question, you should analyze it and determine which agent is best suited to handle it:
+
+1. If the user asks about Elasticsearch logs, indices, or search queries, you MUST transfer to ElasticsearchAgent using the transfer_to_agent function.
+2. If the user asks about currency conversion or exchange rates, you MUST transfer to SimpleMCPAgent using the transfer_to_agent function.
+3. If the user asks about Kubernetes operations or cluster management, you MUST transfer to KubectlAIAgent using the transfer_to_agent function.
+4. For quick web searches, use the SearchAgent tool.
+5. For math, logic, or coding tasks, use the CodingAgent tool.
+6. For CI/CD operations, transfer to CICDPipelineAgent.
+7. For infrastructure provisioning, transfer to InfrastructureAgent.
+8. For monitoring tasks, transfer to MonitoringAgent.
+9. For deployment operations, transfer to DeploymentAgent.
+
+Examples of when to transfer:
+- User asks: "List all Elasticsearch indices" -> Transfer to ElasticsearchAgent
+- User asks: "What is the exchange rate from USD to EUR?" -> Transfer to SimpleMCPAgent
+- User asks: "Show me all pods in my cluster" -> Transfer to KubectlAIAgent
+- User asks: "Deploy a nginx server" -> Transfer to KubectlAIAgent
+
+To transfer to an agent, you MUST call the transfer_to_agent function with the agent name as a parameter.
+Do NOT respond with text suggesting to transfer - you must actually call the function.
+
+If you're unsure which agent to use, ask the user for clarification.""",
     tools=[
-        agent_tool.AgentTool(agent=search_agent.create_agent()),
-        agent_tool.AgentTool(agent=coding_agent),
-        agent_tool.AgentTool(agent=elasticsearch_agent.create_agent()),
+        agent_tool.AgentTool(agent=search_agent_instance),
+        agent_tool.AgentTool(agent=coding_agent_instance),
+    ],
+    sub_agents=[
+        elasticsearch_agent_instance,
+        simple_mcp_agent_instance,
+        kubectl_ai_agent_instance,
+        monitoring_agent_instance,
     ],
     # TODO: Add sub_agents when they are implemented
     # sub_agents=[
     #     cicd_agent.create_agent(),
     #     infrastructure_agent.create_agent(),
-    #     monitoring_agent.create_agent(),
     #     deployment_agent.create_agent(),
     # ],
 )
