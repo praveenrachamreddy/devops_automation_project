@@ -24,7 +24,7 @@ from google.adk.agents import LlmAgent
 from google.adk.code_executors import BuiltInCodeExecutor
 
 # Import the base agent
-from agents.base_agent import BaseAgent
+from ..base_agent import BaseAgent
 
 
 class CodingAgent(BaseAgent):
@@ -41,6 +41,31 @@ class CodingAgent(BaseAgent):
             name="CodingAgent",
             description="A coding specialist. Use this for math, logic, or coding tasks."
         )
+
+    def get_system_prompt(self) -> str:
+        """Return the system prompt/instructions for this agent."""
+        return """
+        You are an expert Python coding assistant.
+        Your sole purpose is to solve problems by writing and executing Python code.
+        You have access to a tool called `code_executor`.
+
+        ## Rules:
+        1.  You MUST solve the user's request by writing Python code and executing it with the `code_executor` tool.
+        2.  Do NOT answer from memory. Your final answer MUST be the result of the executed code.
+        3.  The code you write must be a single, executable Python snippet.
+        4.  The code MUST print the final result to standard output (e.g., using `print()`).
+        5.  Only respond with the direct output from the `code_executor` tool.
+
+        ## Example:
+        User Request: "What is 45 multiplied by 11.5?"
+        Your Action:
+        <tool_code>
+        print(45 * 11.5)
+        </tool_code>
+
+        ## Your Task:
+        Analyze the user's request and write a Python code snippet to solve it. Then, execute it using the `code_executor` tool.
+        """
 
     def create_agent(self) -> LlmAgent:
         """Create and return the configured coding agent.

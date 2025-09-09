@@ -12,7 +12,7 @@ from google.adk.agents import LlmAgent
 from google.adk.tools.mcp_tool import MCPToolset, StreamableHTTPConnectionParams
 
 # Import the base agent
-from agents.base_agent import BaseAgent
+from ..base_agent import BaseAgent
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(format="[%(levelname)s]: %(message)s", level=logging.INFO)
@@ -149,17 +149,12 @@ Before creating ANY resource, you MUST:
         Returns:
             LlmAgent: Configured agent for handling OpenShift tasks
         """
-        # Load configuration to get MCP server URL
-        project_root = Path(__file__).parent.parent.parent.parent
-        config_path = project_root / 'config.yaml'
-        
+        # Use configuration from base class
         mcp_server_url = "http://localhost:8082/mcp"  # Default URL
         try:
-            if config_path.exists():
-                with open(config_path, 'r') as f:
-                    config = yaml.safe_load(f)
+            if self.config:
                 # Check if there's a specific kubectl_ai configuration
-                kubectl_ai_config = config.get('kubectl_ai', {})
+                kubectl_ai_config = self.config.get('kubectl_ai', {})
                 if 'mcp_server_url' in kubectl_ai_config:
                     mcp_server_url = kubectl_ai_config['mcp_server_url']
         except Exception as e:

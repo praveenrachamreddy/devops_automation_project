@@ -117,86 +117,16 @@ async def oc(
             "command": command
         }
 
-@mcp.tool()
-async def bash(
-    command: str,
-    modifies_resource: str = "no"
-) -> Dict[str, Any]:
-    """Executes a bash command.
-    
-    Use this tool only when you need to execute a shell command.
-    
-    Args:
-        command: The bash command to execute.
-        modifies_resource: Whether the command modifies an OpenShift resource.
-                          Possible values: "yes", "no", "unknown"
-    
-    Returns:
-        A dictionary containing the command execution results.
-    """
-    logger.info(f"--- 🛠️ Tool: bash called with command: {command} ---")
-    
-    # Validate inputs
-    if not command:
-        return {"error": "bash command not provided"}
-    
-    # Check for forbidden commands
-    if "oc edit" in command:
-        return {
-            "error": "interactive mode not supported for oc, please use non-interactive commands"
-        }
-    
-    if "oc port-forward" in command:
-        return {
-            "error": "port-forwarding is not allowed because assistant is running in an unattended mode, please try some other alternative"
-        }
-    
-    try:
-        # Get environment with Kubernetes configuration
-        env = get_kubernetes_env()
-        
-        # Execute the command
-        logger.info(f"Executing bash command: {command}")
-        process = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env
-        )
-        
-        stdout, stderr = await process.communicate()
-        
-        result = {
-            "success": process.returncode == 0,
-            "command": command,
-            "stdout": stdout.decode().strip() if stdout else "",
-            "stderr": stderr.decode().strip() if stderr else "",
-            "exit_code": process.returncode
-        }
-        
-        if process.returncode == 0:
-            logger.info(f"✅ bash command executed successfully")
-        else:
-            logger.warning(f"⚠️ bash command failed with exit code {process.returncode}")
-            if stderr:
-                logger.warning(f"Error output: {stderr.decode().strip()}")
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error executing bash command: {e}")
-        return {
-            "success": False,
-            "error": f"Error executing bash command: {str(e)}",
-            "command": command
-        }
+# The 'bash' tool has been removed for security reasons.
+# Providing a general-purpose shell to an AI agent is a significant risk.
+# It's better to create specific, dedicated tools for any required non-oc operations.
 
 if __name__ == "__main__":
     # Get port from environment or default to 8082
     port = int(os.getenv('PORT', 8082))
     
     logger.info(f"🚀 Kubectl-AI MCP Server starting on port {port}")
-    logger.info("Available tools: oc, bash")
+    logger.info("Available tools: oc")
     logger.info(f"Server URL will be: http://localhost:{port}/mcp")
     
     # Log Kubernetes configuration

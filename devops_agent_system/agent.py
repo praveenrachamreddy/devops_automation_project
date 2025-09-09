@@ -12,129 +12,134 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Main Agent Orchestrator - Entry point for the ADK web interface.
+"""Main Agent Orchestrator - Entry point for the ADK web interface."""
 
-This module defines a root agent that acts as an orchestrator, using a hybrid
-model of delegation: using simple agents as tools, and transferring to complex
-sub-agents for sequential workflows.
-"""
-
-import sys
-import os
 import yaml
+import importlib
+import os
+import sys
 
-# Add the project root and subdirectories to the path
-project_root = os.path.abspath(os.path.dirname(__file__))
-parent_dir = os.path.dirname(project_root)
-sys.path.insert(0, parent_dir)
-sys.path.insert(0, project_root)
-sys.path.insert(0, os.path.join(project_root, 'agents'))
-sys.path.insert(0, os.path.join(project_root, 'agents', 'sub_agents'))
-
-from google.adk.agents import LlmAgent, SequentialAgent
+from google.adk.agents import LlmAgent
 from google.adk.tools import agent_tool
-from google.adk.code_executors import BuiltInCodeExecutor
+
+# =============================================================================
+# CONFIGURATION LOADING
+# =============================================================================
+
+def load_config():
+    """Loads the main configuration from config.yaml."""
+    # Assume config.yaml is in the project root, which is the parent of this file's directory.
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    config_path = os.path.join(project_root, 'config.yaml')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        print(f"Warning: Config file not found at {config_path}. Using default model.")
+        return {'agent_settings': {'model': 'gemini-2.0-flash'}}
+    except Exception as e:
+        print(f"Error loading config file: {e}. Using default configuration.")
+        return {'agent_settings': {'model': 'gemini-2.0-flash'}}
+
+config = load_config()
+model_name = config.get('agent_settings', {}).get('model', 'gemini-2.0-flash')
 
 
 # =============================================================================
-# LOAD CONFIGURATION
+# AGENT REGISTRY AND DYNAMIC LOADING
 # =============================================================================
 
-config_path = os.path.join(parent_dir, 'config.yaml')
-try:
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-except FileNotFoundError:
-    print(f"Config file not found at {config_path}. Using default configuration.")
-    config = {
-        'agent_settings': {
-            'model': 'gemini-2.0-flash'
-        }
-    }
-except Exception as e:
-    print(f"Error loading config file: {e}. Using default configuration.")
-    config = {
-        'agent_settings': {
-            'model': 'gemini-2.0-flash'
-        }
-    }
+# The agent registry provides a centralized and extensible way to manage agents.
+# Using relative imports (.) makes the loading more robust when this package is
+# imported by other modules (like main.py).
+AGENT_REGISTRY = {
+    "search_agent": ".agents.sub_agents.search_agent",
+    "coding_agent": ".agents.sub_agents.coding_agent",
+    "elasticsearch_agent": ".agents.sub_agents.elasticsearch_agent",
+    "simple_mcp_agent": ".agents.sub_agents.simple_mcp_agent",
+    "kubectl_ai_agent": ".agents.sub_agents.kubectl_ai_agent",
+    "monitoring_agent": ".agents.sub_agents.monitoring_agent",
+    "cicd_agent": ".agents.sub_agents.cicd_agent",
+    "infrastructure_agent": ".agents.sub_agents.infrastructure_agent",
+    "deployment_agent": ".agents.sub_agents.deployment_agent",
+}
 
-model_name = config['agent_settings']['model']
+# Define which agents are simple tools vs. complex, transferable sub-agents.
+TOOL_AGENTS = ["search_agent", "coding_agent"]
+TRANSFER_AGENTS = [
+    "elasticsearch_agent",
+    "simple_mcp_agent",
+    "kubectl_ai_agent",
+    "monitoring_agent",
+    "cicd_agent",
+    "infrastructure_agent",
+    "deployment_agent",
+]
+
+def load_agent_from_registry(agent_name: str):
+    """
+    Dynamically imports and creates an agent instance from the registry.
+    This allows for a plug-and-play architecture for agents.
+    """
+    try:
+        module_path = AGENT_REGISTRY[agent_name]
+        # The package argument is crucial for relative imports to work correctly.
+        agent_module = importlib.import_module(module_path, package="devops_agent_system")
+        # Assumes the module contains a factory object with the same name as the agent
+        agent_factory = getattr(agent_module, agent_name)
+        return agent_factory.create_agent()
+    except (ImportError, KeyError, AttributeError) as e:
+        print(f"Error loading agent '{agent_name}': {e}", file=sys.stderr)
+        return None
+
+# Eagerly load all registered agents.
+print("Loading agents...")
+all_agents = {name: load_agent_from_registry(name) for name in AGENT_REGISTRY}
+all_agents = {name: agent for name, agent in all_agents.items() if agent} # Filter out failed loads
+print("Agents loaded successfully.")
+
+# Separate agents into tools and sub-agents for the orchestrator
+tool_agent_instances = [
+    agent_tool.AgentTool(agent=all_agents[name])
+    for name in TOOL_AGENTS if name in all_agents
+]
+sub_agent_instances = [
+    all_agents[name] for name in TRANSFER_AGENTS if name in all_agents
+]
 
 
 # =============================================================================
-# 1. DEFINE SPECIALIZED AGENTS (THE "EXPERTS")
+# ORCHESTRATOR (ROOT AGENT) DEFINITION
 # =============================================================================
 
-# Import the simple, single-purpose agents
-from agents.sub_agents.search_agent import search_agent
-from agents.sub_agents.elasticsearch_agent import elasticsearch_agent
-from agents.sub_agents.coding_agent import coding_agent
-from agents.sub_agents.simple_mcp_agent import simple_mcp_agent
-from agents.sub_agents.kubectl_ai_agent import kubectl_ai_agent
-from agents.sub_agents.monitoring_agent import monitoring_agent
-
-# Create instances of the specialized agents
-search_agent_instance = search_agent.create_agent()
-
-coding_agent_instance = coding_agent.create_agent()
-
-elasticsearch_agent_instance = elasticsearch_agent.create_agent()
-
-simple_mcp_agent_instance = simple_mcp_agent.create_agent()
-
-kubectl_ai_agent_instance = kubectl_ai_agent.create_agent()
-
-monitoring_agent_instance = monitoring_agent.create_agent()
-
-# =============================================================================
-# 2. DEFINE THE ORCHESTRATOR (ROOT AGENT)
-# =============================================================================
-
-# This root agent uses the hybrid model of orchestration.
 root_agent = LlmAgent(
     name="DevOpsOrchestratorAgent",
     model=model_name,
-    instruction="""You are a master DevOps orchestrator. Your job is to delegate tasks to the most appropriate agent.
+    instruction="""You are a master DevOps orchestrator and automation expert. Your primary responsibility is to analyze user requests and delegate them to the most appropriate specialized agent or tool.
 
-When a user asks a question, you should analyze it and determine which agent is best suited to handle it:
 
-1. If the user asks about Elasticsearch logs, indices, or search queries, you MUST transfer to ElasticsearchAgent using the transfer_to_agent function.
-2. If the user asks about currency conversion or exchange rates, you MUST transfer to SimpleMCPAgent using the transfer_to_agent function.
-3. If the user asks about Kubernetes operations or cluster management, you MUST transfer to KubectlAIAgent using the transfer_to_agent function.
-4. For quick web searches, use the SearchAgent tool.
-5. For math, logic, or coding tasks, use the CodingAgent tool.
-6. For CI/CD operations, transfer to CICDPipelineAgent.
-7. For infrastructure provisioning, transfer to InfrastructureAgent.
-8. For monitoring tasks, transfer to MonitoringAgent.
-9. For deployment operations, transfer to DeploymentAgent.
+    
+You have access to the full conversation history through the session context, so you can understand follow-up questions and maintain context across turns.
 
-Examples of when to transfer:
-- User asks: "List all Elasticsearch indices" -> Transfer to ElasticsearchAgent
-- User asks: "What is the exchange rate from USD to EUR?" -> Transfer to SimpleMCPAgent
-- User asks: "Show me all pods in my cluster" -> Transfer to KubectlAIAgent
-- User asks: "Deploy a nginx server" -> Transfer to KubectlAIAgent
+## Core Principles:
+1.  **Handle Greetings**: For simple, conversational greetings like "hi" or "hello", respond directly and politely. Do not use any tools or agents for this.
+2.  **Maintain Context**: You have access to the full conversation history for each session. Use this history to understand follow-up questions and maintain context across turns.
+3.  **Analyze Intent**: For any other request, analyze the user's intent to determine the correct course of action.
+4.  **Delegate to Sub-Agents**: For complex, multi-step tasks that fall into a specific domain (like Kubernetes, monitoring, or CI/CD), transfer control to the appropriate specialized sub-agent.
+5.  **Use Tools**: For simple, single-step tasks (like a web search or a calculation), use a direct tool call.
+6.  **Clarify Ambiguity**: If the user's request is unclear, ask specific questions to understand their goal before proceeding.
 
-To transfer to an agent, you MUST call the transfer_to_agent function with the agent name as a parameter.
-Do NOT respond with text suggesting to transfer - you must actually call the function.
+## Agent Capabilities:
+You have access to a set of tools for simple tasks and a team of specialized sub-agents for complex workflows.
 
-If you're unsure which agent to use, ask the user for clarification.""",
-    tools=[
-        agent_tool.AgentTool(agent=search_agent_instance),
-        agent_tool.AgentTool(agent=coding_agent_instance),
-    ],
-    sub_agents=[
-        elasticsearch_agent_instance,
-        simple_mcp_agent_instance,
-        kubectl_ai_agent_instance,
-        monitoring_agent_instance,
-    ],
-    # TODO: Add sub_agents when they are implemented
-    # sub_agents=[
-    #     cicd_agent.create_agent(),
-    #     infrastructure_agent.create_agent(),
-    #     deployment_agent.create_agent(),
-    # ],
+-   **Tools**: For direct, immediate actions like web searches or code execution.
+-   **Sub-Agents**: For domain-specific tasks like log analysis, cloud infrastructure management, Kubernetes operations, CI/CD pipelines, and monitoring. You will be shown the descriptions of these agents to make your decision.
+
+## Critical Rules:
+1.  **Transfer Priority**: If a request falls into the domain of a specialized sub-agent, you MUST use the `transfer_to_agent()` function. Do not try to answer it yourself.
+2.  **Focus**: Your primary role is to route and delegate. Let the specialized agents and tools handle the details of the execution.""",
+    tools=tool_agent_instances,
+    sub_agents=sub_agent_instances,
 )
 
 # This is required for the ADK to find the root agent

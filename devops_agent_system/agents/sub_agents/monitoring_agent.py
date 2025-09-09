@@ -12,7 +12,7 @@ from google.adk.agents import LlmAgent
 from google.adk.tools.mcp_tool import MCPToolset, StreamableHTTPConnectionParams
 
 # Import the base agent
-from agents.base_agent import BaseAgent
+from ..base_agent import BaseAgent
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(format="[%(levelname)s]: %(message)s", level=logging.INFO)
@@ -112,17 +112,12 @@ When providing analysis results:
         Returns:
             LlmAgent: Configured agent for handling monitoring tasks
         """
-        # Load configuration to get MCP server URL
-        project_root = Path(__file__).parent.parent.parent.parent
-        config_path = project_root / 'config.yaml'
-        
+        # Use configuration from base class
         mcp_server_url = "http://localhost:8083/mcp"  # Default URL for Thanos MCP server
         try:
-            if config_path.exists():
-                with open(config_path, 'r') as f:
-                    config = yaml.safe_load(f)
+            if self.config:
                 # Check if there's a specific monitoring configuration
-                monitoring_config = config.get('devops_settings', {}).get('monitoring', {})
+                monitoring_config = self.config.get('devops_settings', {}).get('monitoring', {})
                 if 'thanos_url' in monitoring_config:
                     # Convert Thanos URL to MCP server URL
                     thanos_url = monitoring_config['thanos_url']

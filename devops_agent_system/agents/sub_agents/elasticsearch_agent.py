@@ -11,7 +11,7 @@ from google.adk.agents import LlmAgent
 from google.adk.tools.mcp_tool import MCPToolset, StreamableHTTPConnectionParams
 
 # Import the base agent
-from agents.base_agent import BaseAgent
+from ..base_agent import BaseAgent
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(format="[%(levelname)s]: %(message)s", level=logging.INFO)
