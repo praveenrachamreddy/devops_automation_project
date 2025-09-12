@@ -5,15 +5,28 @@ This server provides WebSocket support for real-time communication with your Dev
 """
 
 import asyncio
+import base64
 import json
 import sqlite3
 import uuid
 import os
+import sys
 from datetime import datetime
+from enum import Enum
 from typing import Optional, Dict, Any, List, AsyncGenerator
 import logging
 import collections.abc
 from pathlib import Path
+
+# Fix for Windows aiodns issue - set SelectorEventLoop before any other imports
+if sys.platform == 'win32':
+    # Set the event loop policy to use SelectorEventLoop on Windows
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    logger = logging.getLogger(__name__)
+    if hasattr(logger, 'info'):  # Check if logger is initialized
+        logger.info("Windows detected: Using SelectorEventLoop for aiodns compatibility")
+    else:
+        print("Windows detected: Using SelectorEventLoop for aiodns compatibility")
 
 # Load environment variables from .env file
 try:
@@ -28,7 +41,7 @@ except ImportError:
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import google.genai.types as types
@@ -39,6 +52,16 @@ from google.adk.sessions import DatabaseSessionService
 from google.adk.runners import Runner
 from google.adk.sessions.session import Session
 from google.adk.sessions.session import Event
+
+# =============================================================================
+# STREAMING MODE ENUM
+# =============================================================================
+
+class StreamingMode(str, Enum):
+    """Enumeration of supported streaming modes."""
+    NONE = "none"
+    SSE = "sse"  # Server-Sent Events
+    BIDI = "bidi"  # Bidirectional streaming
 
 # Import your agent
 try:
@@ -94,6 +117,18 @@ def init_database():
         )
     """)
     
+    # Create session resumption tokens table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS session_resumption_tokens (
+            token TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id)
+        )
+    """)
+    
     conn.commit()
     conn.close()
     logger.info("Custom database tables initialized successfully")
@@ -119,16 +154,30 @@ class ChatRequest(BaseModel):
     user_id: Optional[str] = "default_user" 
     session_id: Optional[str] = None  # If None, a new one will be created/retrieved
 
+class StreamingConfig(BaseModel):
+    """Configuration for streaming behavior."""
+    mode: StreamingMode = StreamingMode.BIDI
+    buffer_size: int = 4096
+    timeout: int = 30
+    enable_partial_responses: bool = True
+
 class WebSocketResponse(BaseModel):
-    type: str  # 'message', 'error', 'session_info', 'agent_thinking'
+    type: str  # 'message', 'error', 'session_info', 'agent_thinking', 'audio'
     content: str
     session_id: Optional[str] = None
     timestamp: Optional[float] = None
     metadata: Optional[Dict[str, Any]] = None
+    mime_type: Optional[str] = None  # For audio data, e.g., 'audio/pcm'
+    data: Optional[str] = None  # Base64 encoded audio data
 
 # =============================================================================
+# PRODUCTION CONFIGURATION
 # HELPERS (Serializer and Parser)
 # =============================================================================
+
+# Instance identification for multiple instances
+INSTANCE_ID = os.environ.get("INSTANCE_ID", str(uuid.uuid4()))
+HOSTNAME = os.environ.get("HOSTNAME", "localhost")
 
 def json_default_serializer(obj):
     """JSON serializer for objects not serializable by default json code"""
@@ -146,7 +195,9 @@ def serialize_adk_event_for_streaming(event):
         "tool_calls": None,
         "tool_responses": None,
         "error_message": getattr(event, 'error_message', None),
-        "timestamp": datetime.now().timestamp()
+        "timestamp": datetime.now().timestamp(),
+        "audio_data": None,
+        "mime_type": None
     }
     
     if hasattr(event, 'content') and event.content and hasattr(event.content, 'parts'):
@@ -154,6 +205,7 @@ def serialize_adk_event_for_streaming(event):
         text_parts = []
         tool_call_parts = []
         tool_response_parts = []
+        audio_parts = []
         
         for part in event.content.parts:
             if hasattr(part, 'text') and part.text is not None:
@@ -168,6 +220,20 @@ def serialize_adk_event_for_streaming(event):
                     "name": part.function_response.name,
                     "response": part.function_response.response
                 })
+            elif hasattr(part, 'inline_data') and part.inline_data is not None:
+                # Handle audio data
+                if hasattr(part.inline_data, 'mime_type') and part.inline_data.mime_type.startswith('audio/'):
+                    if hasattr(part.inline_data, 'data'):
+                        # Convert audio data to Base64 for JSON serialization
+                        audio_data = part.inline_data.data
+                        base64_audio = array_buffer_to_base64(audio_data)
+                        audio_parts.append({
+                            "mime_type": part.inline_data.mime_type,
+                            "data": base64_audio,
+                            "size": len(audio_data)
+                        })
+                        event_data["mime_type"] = part.inline_data.mime_type
+                        event_data["audio_data"] = base64_audio
         
         if text_parts:
             event_data["content_text"] = " ".join(filter(None, text_parts))
@@ -175,6 +241,8 @@ def serialize_adk_event_for_streaming(event):
             event_data["tool_calls"] = tool_call_parts
         if tool_response_parts:
             event_data["tool_responses"] = tool_response_parts
+        if audio_parts:
+            event_data["audio_parts"] = audio_parts
     
     return event_data
 
@@ -196,6 +264,86 @@ def parse_adk_event(event):
         if detail:
             parsed_details.append(detail)
     return parsed_details
+
+
+def array_buffer_to_base64(buffer):
+    """Convert an array buffer to Base64 string."""
+    if isinstance(buffer, bytes):
+        return base64.b64encode(buffer).decode("ascii")
+    elif isinstance(buffer, bytearray):
+        return base64.b64encode(bytes(buffer)).decode("ascii")
+    else:
+        raise TypeError("Buffer must be bytes or bytearray")
+
+def base64_to_array_buffer(base64_string):
+    """Convert a Base64 string to bytes."""
+    return base64.b64decode(base64_string)
+
+def extract_agent_and_tool_info(event):
+    """Extract detailed agent and tool information from ADK events for better visualization"""
+    info = {
+        "event_type": None,
+        "agent_name": None,
+        "tool_name": None,
+        "content": None,
+        "is_transfer": False
+    }
+    
+    # Check for agent transfer (sub-agent activation)
+    if hasattr(event, 'author') and event.author:
+        info["agent_name"] = event.author
+    
+    # Check for tool calls
+    if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
+        for part in event.content.parts:
+            if hasattr(part, "function_call") and part.function_call:
+                info["event_type"] = "tool_call"
+                info["tool_name"] = part.function_call.name
+                info["content"] = dict(part.function_call.args) if hasattr(part.function_call, 'args') else {}
+                break
+            elif hasattr(part, "function_response") and part.function_response:
+                info["event_type"] = "tool_response"
+                info["tool_name"] = part.function_response.name
+                info["content"] = part.function_response.response
+                break
+            elif hasattr(part, "text") and part.text:
+                # Check if this is an agent transfer message
+                text_content = part.text.lower()
+                if "transferring to" in text_content or "transfer to" in text_content:
+                    info["event_type"] = "agent_transfer"
+                    info["is_transfer"] = True
+                    # Try to extract agent name from text
+                    if ":" in part.text:
+                        info["agent_name"] = part.text.split(":")[-1].strip()
+                else:
+                    info["event_type"] = "agent_response"
+                    info["content"] = part.text
+                break
+    
+    # If we haven't identified a specific event type, check for agent transfer in other ways
+    if not info["event_type"] and hasattr(event, 'author') and event.author:
+        if hasattr(event, 'content') and event.content:
+            # This is likely an agent response
+            info["event_type"] = "agent_response"
+    
+    return info
+
+# =============================================================================
+# BASE64 CONVERSION HELPERS
+# =============================================================================
+
+def array_buffer_to_base64(buffer):
+    """Convert an array buffer to Base64 string."""
+    if isinstance(buffer, bytes):
+        return base64.b64encode(buffer).decode("ascii")
+    elif isinstance(buffer, bytearray):
+        return base64.b64encode(bytes(buffer)).decode("ascii")
+    else:
+        raise TypeError("Buffer must be bytes or bytearray")
+
+def base64_to_array_buffer(base64_string):
+    """Convert a Base64 string to bytes."""
+    return base64.b64decode(base64_string)
 
 # =============================================================================
 # CONNECTION MANAGER
@@ -247,7 +395,13 @@ class ConnectionManager:
             if connection_id in self.active_connections:
                 websocket = self.active_connections[connection_id]
                 try:
-                    await websocket.send_text(response.model_dump_json())
+                    # Handle audio data differently if present
+                    if response.mime_type == "audio/pcm" and response.data:
+                        # For audio data, we can send it as binary or keep it as Base64 in JSON
+                        # Let's send as JSON with Base64 data for compatibility
+                        await websocket.send_text(response.model_dump_json())
+                    else:
+                        await websocket.send_text(response.model_dump_json())
                     
                     # Update last activity
                     conn = sqlite3.connect(DATABASE_PATH)
@@ -270,10 +424,11 @@ class ConnectionManager:
 # =============================================================================
 
 class ADKManager:
-    def __init__(self):
+    def __init__(self, streaming_config: Optional[StreamingConfig] = None):
         self.session_service = None
         self.runner = None
         self.app_name = "devops_orchestrator"
+        self.streaming_config = streaming_config or StreamingConfig()
     
     async def initialize(self):
         """Initialize ADK components with database session service."""
@@ -380,6 +535,100 @@ class ADKManager:
             ):
                 logger.info(f"Processing event: {type(event)}")
                 
+                # Extract detailed agent and tool information
+                event_info = extract_agent_and_tool_info(event)
+                
+                # Check for audio content in the event
+                audio_data = None
+                if hasattr(event, 'content') and event.content and hasattr(event.content, 'parts'):
+                    for part in event.content.parts:
+                        # Check for inline audio data
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            if hasattr(part.inline_data, 'mime_type') and part.inline_data.mime_type.startswith('audio/'):
+                                if hasattr(part.inline_data, 'data'):
+                                    audio_data = part.inline_data.data
+                
+                # Send appropriate WebSocket messages based on event type
+                if audio_data:
+                    # Convert audio data to Base64 for transmission
+                    base64_audio = array_buffer_to_base64(audio_data)
+                    
+                    # Send audio data to client
+                    await connection_manager.send_message(
+                        session.id,
+                        WebSocketResponse(
+                            type="audio",
+                            content=f"Audio response: {len(audio_data)} bytes",
+                            session_id=session.id,
+                            timestamp=datetime.now().timestamp(),
+                            mime_type="audio/pcm",
+                            data=base64_audio,
+                            metadata={
+                                "event_type": "audio_response",
+                                "audio_size": len(audio_data)
+                            }
+                        )
+                    )
+                elif event_info["event_type"] == "agent_transfer":
+                    await connection_manager.send_message(
+                        session.id,
+                        WebSocketResponse(
+                            type="agent_transfer",
+                            content=f"🔄 Transferring to {event_info['agent_name']}",
+                            session_id=session.id,
+                            timestamp=datetime.now().timestamp(),
+                            metadata={
+                                "agent_name": event_info['agent_name'],
+                                "event_type": "agent_transfer"
+                            }
+                        )
+                    )
+                elif event_info["event_type"] == "tool_call":
+                    await connection_manager.send_message(
+                        session.id,
+                        WebSocketResponse(
+                            type="tool_call",
+                            content=f"🔧 Using tool: {event_info['tool_name']}",
+                            session_id=session.id,
+                            timestamp=datetime.now().timestamp(),
+                            metadata={
+                                "tool_name": event_info['tool_name'],
+                                "tool_args": event_info['content'],
+                                "event_type": "tool_call"
+                            }
+                        )
+                    )
+                elif event_info["event_type"] == "tool_response":
+                    await connection_manager.send_message(
+                        session.id,
+                        WebSocketResponse(
+                            type="tool_response",
+                            content=f"✅ Tool response: {str(event_info['content'])[:200]}{'...' if len(str(event_info['content'])) > 200 else ''}",
+                            session_id=session.id,
+                            timestamp=datetime.now().timestamp(),
+                            metadata={
+                                "tool_name": event_info['tool_name'],
+                                "tool_response": event_info['content'],
+                                "event_type": "tool_response"
+                            }
+                        )
+                    )
+                elif event_info["event_type"] == "agent_response":
+                    await connection_manager.send_message(
+                        session.id,
+                        WebSocketResponse(
+                            type="agent_response",
+                        content=f"🤖 {event_info['agent_name'] or 'Agent'}: {event_info['content']}" if event_info['agent_name'] else event_info['content'],
+                            session_id=session.id,
+                            timestamp=datetime.now().timestamp(),
+                            metadata={
+                                "agent_name": event_info['agent_name'],
+                                "event_type": "agent_response"
+                            }
+                        )
+                    )
+                
+                # Also collect the final response text
                 if hasattr(event, 'content') and event.content:
                     if isinstance(event.content, types.Content):
                         # Extract text and function calls from Content object's parts
@@ -449,8 +698,14 @@ class ADKManager:
                     user_id=user_id,
                     new_message=content
                 ):
+                    # Extract detailed agent and tool information
+                    event_info = extract_agent_and_tool_info(event)
+                    
                     # Serialize event using the new serialization function
                     event_data = serialize_adk_event_for_streaming(event)
+                    
+                    # Add our enhanced information to the event data
+                    event_data["enhanced_info"] = event_info
                     
                     # Yield in proper SSE format - ADK events should have a .json() method
                     if hasattr(event, 'json'):
@@ -499,6 +754,106 @@ class ADKManager:
             logger.error(f"Error getting session history: {e}")
             return []
 
+    async def create_resumption_token(self, session_id: str, user_id: str) -> str:
+        """Create a resumption token for a session."""
+        try:
+            # Generate a unique token
+            token = str(uuid.uuid4())
+            
+            # Calculate expiration time (24 hours from now)
+            expires_at = datetime.now().timestamp() + (24 * 60 * 60)
+            
+            # Store in database
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO session_resumption_tokens 
+                (token, session_id, user_id, expires_at)
+                VALUES (?, ?, ?, ?)
+            """, (token, session_id, user_id, datetime.fromtimestamp(expires_at)))
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Created resumption token for session {session_id}")
+            return token
+        except Exception as e:
+            logger.error(f"Error creating resumption token: {e}")
+            raise
+
+    async def validate_resumption_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Validate a resumption token and return session info if valid."""
+        try:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT session_id, user_id, expires_at 
+                FROM session_resumption_tokens 
+                WHERE token = ?
+            """, (token,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                session_id, user_id, expires_at = row
+                # Check if token is expired
+                if datetime.fromtimestamp(expires_at) > datetime.now():
+                    return {
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "valid": True
+                    }
+                else:
+                    # Token expired, clean it up
+                    await self.invalidate_resumption_token(token)
+                    return {"valid": False, "reason": "expired"}
+            
+            return {"valid": False, "reason": "not found"}
+        except Exception as e:
+            logger.error(f"Error validating resumption token: {e}")
+            return {"valid": False, "reason": str(e)}
+
+    async def invalidate_resumption_token(self, token: str):
+        """Invalidate a resumption token."""
+        try:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM session_resumption_tokens 
+                WHERE token = ?
+            """, (token,))
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Invalidated resumption token: {token}")
+        except Exception as e:
+            logger.error(f"Error invalidating resumption token: {e}")
+
+    async def handle_audio_streaming(self, session_id: str, user_id: str, audio_data: bytes, connection_manager: ConnectionManager):
+        """Handle audio streaming from client to agent."""
+        try:
+            # Convert audio data to Base64 for transmission
+            base64_audio = base64.b64encode(audio_data).decode("ascii")
+            
+            # Send audio data to client as acknowledgment
+            await connection_manager.send_message(
+                session_id,
+                WebSocketResponse(
+                    type="audio_received",
+                    content=f"Received audio data: {len(audio_data)} bytes",
+                    session_id=session_id,
+                    timestamp=datetime.now().timestamp(),
+                    mime_type="audio/pcm",
+                    data=base64_audio
+                )
+            )
+            
+            # Here you would typically process the audio data with the agent
+            # For now, we'll just acknowledge receipt
+            return f"Processed audio data: {len(audio_data)} bytes"
+        except Exception as e:
+            logger.error(f"Error handling audio streaming: {e}")
+            return f"Error handling audio streaming: {str(e)}"
+
 # =============================================================================
 # FASTAPI APP SETUP
 # =============================================================================
@@ -507,13 +862,28 @@ class ADKManager:
 async def lifespan(app: FastAPI):
     # Startup
     init_database()
-    app.state.adk_manager = ADKManager()
+    # Create streaming configuration
+    streaming_config = StreamingConfig(
+        mode=StreamingMode.BIDI,
+        buffer_size=4096,
+        timeout=30,
+        enable_partial_responses=True
+    )
+    app.state.adk_manager = ADKManager(streaming_config=streaming_config)
     await app.state.adk_manager.initialize()
     app.state.connection_manager = ConnectionManager()
     logger.info("FastAPI server started with ADK integration")
     yield
     # Shutdown
     logger.info("FastAPI server shutting down")
+    # Close all active connections
+    if hasattr(app.state, 'connection_manager'):
+        # Disconnect all active connections
+        for connection_id in list(app.state.connection_manager.active_connections.keys()):
+            # We don't have session_id here, so we'll just remove from active_connections
+            if connection_id in app.state.connection_manager.active_connections:
+                del app.state.connection_manager.active_connections[connection_id]
+        logger.info("Closed all active WebSocket connections")
 
 app = FastAPI(
     title="ADK Multi-Agent DevOps Orchestrator",
@@ -531,6 +901,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 # =============================================================================
 # DEPENDENCY INJECTION
 # =============================================================================
@@ -547,172 +920,142 @@ def get_connection_manager() -> ConnectionManager:
 
 @app.get("/", response_class=HTMLResponse)
 async def get_root():
-    """Serve a simple chat interface."""
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>ADK Multi-Agent Chat</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }
-            .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            .chat-container { border: 1px solid #ddd; height: 400px; overflow-y: scroll; padding: 10px; margin: 20px 0; background: #fafafa; border-radius: 4px; }
-            .message { margin: 10px 0; padding: 8px 12px; border-radius: 6px; }
-            .user-message { background: #007bff; color: white; margin-left: 20%; }
-            .agent-message { background: #e9ecef; margin-right: 20%; }
-            .system-message { background: #fff3cd; color: #856404; font-style: italic; }
-            .input-container { display: flex; gap: 10px; }
-            .input-container input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
-            .input-container button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-            .input-container button:hover { background: #0056b3; }
-            .status { padding: 10px; margin: 10px 0; border-radius: 4px; background: #d1ecf1; border-left: 4px solid #bee5eb; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🤖 ADK Multi-Agent DevOps Orchestrator</h1>
-            <div class="status" id="status">Connecting...</div>
-            <div class="chat-container" id="chatContainer"></div>
-            <div class="input-container">
-                <input type="text" id="messageInput" placeholder="Type your DevOps question or command..." maxlength="1000">
-                <button onclick="sendMessage()">Send</button>
-            </div>
-            <p><small>Session ID: <span id="sessionId">Generating...</span></small></p>
-        </div>
-
-        <script>
-            let ws = null;
-            let sessionId = generateSessionId();
-            const userId = 'web_user_' + Math.random().toString(36).substr(2, 9);
-            
-            document.getElementById('sessionId').textContent = sessionId;
-            
-            function generateSessionId() {
-                return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-            }
-            
-            function connectWebSocket() {
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const wsUrl = `${protocol}//${window.location.host}/ws/${sessionId}?user_id=${userId}`;
-                
-                ws = new WebSocket(wsUrl);
-                
-                ws.onopen = function() {
-                    document.getElementById('status').textContent = '✅ Connected to ADK Multi-Agent System';
-                    document.getElementById('status').style.background = '#d4edda';
-                    document.getElementById('status').style.borderColor = '#c3e6cb';
-                };
-                
-                ws.onmessage = function(event) {
-                    const response = JSON.parse(event.data);
-                    handleMessage(response);
-                };
-                
-                ws.onclose = function() {
-                    document.getElementById('status').textContent = '❌ Connection lost. Refresh to reconnect.';
-                    document.getElementById('status').style.background = '#f8d7da';
-                    document.getElementById('status').style.borderColor = '#f5c6cb';
-                };
-                
-                ws.onerror = function(error) {
-                    console.error('WebSocket error:', error);
-                    document.getElementById('status').textContent = '❌ Connection error';
-                };
-            }
-            
-            function handleMessage(response) {
-                const chatContainer = document.getElementById('chatContainer');
-                const messageDiv = document.createElement('div');
-                messageDiv.className = 'message';
-                
-                if (response.type === 'message') {
-                    messageDiv.className += ' agent-message';
-                    messageDiv.innerHTML = `<strong>🤖 DevOps Agent:</strong><br>${response.content.replace(/\\n/g, '<br>')}`;
-                } else if (response.type === 'agent_thinking') {
-                    messageDiv.className += ' system-message';
-                    messageDiv.innerHTML = `💭 ${response.content}`;
-                    messageDiv.id = 'thinking-indicator';
-                } else if (response.type === 'error') {
-                    messageDiv.className += ' system-message';
-                    messageDiv.style.background = '#f8d7da';
-                    messageDiv.innerHTML = `❌ Error: ${response.content}`;
-                }
-                
-                chatContainer.appendChild(messageDiv);
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-                
-                // Remove thinking indicator when we get the actual response
-                if (response.type === 'message') {
-                    const thinkingIndicator = document.getElementById('thinking-indicator');
-                    if (thinkingIndicator) {
-                        thinkingIndicator.remove();
-                    }
-                }
-            }
-            
-            function addUserMessage(message) {
-                const chatContainer = document.getElementById('chatContainer');
-                const messageDiv = document.createElement('div');
-                messageDiv.className = 'message user-message';
-                messageDiv.innerHTML = `<strong>👤 You:</strong><br>${message.replace(/\\n/g, '<br>')}`;
-                chatContainer.appendChild(messageDiv);
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
-            
-            function sendMessage() {
-                const input = document.getElementById('messageInput');
-                const message = input.value.trim();
-                
-                if (message && ws && ws.readyState === WebSocket.OPEN) {
-                    addUserMessage(message);
-                    ws.send(JSON.stringify({
-                        message: message,
-                        session_id: sessionId,
-                        user_id: userId
-                    }));
-                    input.value = '';
-                }
-            }
-            
-            // Event listeners
-            document.getElementById('messageInput').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') {
-                    sendMessage();
-                }
-            });
-            
-            // Connect on page load
-            connectWebSocket();
-            
-            // Add welcome message
-            setTimeout(() => {
-                const chatContainer = document.getElementById('chatContainer');
-                const welcomeDiv = document.createElement('div');
-                welcomeDiv.className = 'message system-message';
-                welcomeDiv.innerHTML = `🚀 Welcome to the ADK Multi-Agent DevOps Orchestrator!<br>
-                I can help you with:<br>
-                • Web searches and research<br>
-                • Code analysis and development<br>
-                • Elasticsearch operations<br>
-                • Kubernetes management<br>
-                • Infrastructure automation<br>
-                • CI/CD pipelines<br>
-                • System monitoring<br>
-                • And much more!<br><br>
-                Ask me anything about your DevOps needs!`;
-                chatContainer.appendChild(welcomeDiv);
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }, 500);
-        </script>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content)
+    """Serve the chat interface from static file."""
+    return FileResponse("static/index.html")
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@app.get("/health/detailed")
+async def detailed_health_check(adk_manager: ADKManager = Depends(get_adk_manager)):
+    """Detailed health check endpoint with component status."""
+    health_status = {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "instance": {
+            "id": INSTANCE_ID,
+            "hostname": HOSTNAME,
+            "port": os.environ.get("PORT", 8000)
+        },
+        "components": {
+            "database": "unknown",
+            "adk_manager": "unknown",
+            "connection_manager": "unknown"
+        }
+    }
+    
+    # Check database connectivity
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        conn.close()
+        health_status["components"]["database"] = "healthy"
+    except Exception as e:
+        health_status["components"]["database"] = f"unhealthy: {str(e)}"
+        health_status["status"] = "degraded"
+    
+    # Check ADK manager
+    if adk_manager.runner and adk_manager.session_service:
+        health_status["components"]["adk_manager"] = "healthy"
+    else:
+        health_status["components"]["adk_manager"] = "unhealthy: not initialized"
+        health_status["status"] = "degraded"
+    
+    return health_status
+
+@app.get("/health/liveness")
+async def liveness_probe():
+    """Liveness probe for Kubernetes."""
+    return {"status": "alive", "timestamp": datetime.now().isoformat()}
+
+@app.get("/health/readiness")
+async def readiness_probe(adk_manager: ADKManager = Depends(get_adk_manager)):
+    """Readiness probe for Kubernetes."""
+    if adk_manager.runner and adk_manager.session_service:
+        return {"status": "ready", "timestamp": datetime.now().isoformat()}
+    else:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+@app.get("/health/loadbalancer")
+async def load_balancer_health_check(connection_manager: ConnectionManager = Depends(get_connection_manager)):
+    """Health check endpoint specifically for load balancers."""
+    # Get active connections count
+    active_connections = len(connection_manager.active_connections)
+    
+    # Check if we're at capacity (assuming a max of 1000 connections per instance)
+    max_connections = int(os.environ.get("MAX_CONNECTIONS", 1000))
+    capacity_percentage = (active_connections / max_connections) * 100 if max_connections > 0 else 0
+    
+    # Determine status based on capacity
+    if capacity_percentage > 90:
+        status = "unhealthy"  # Over 90% capacity
+    elif capacity_percentage > 75:
+        status = "degraded"   # 75-90% capacity
+    else:
+        status = "healthy"    # Under 75% capacity
+    
+    return {
+        "status": status,
+        "timestamp": datetime.now().isoformat(),
+        "instance": {
+            "id": INSTANCE_ID,
+            "hostname": HOSTNAME
+        },
+        "load": {
+            "active_connections": active_connections,
+            "max_connections": max_connections,
+            "capacity_percentage": round(capacity_percentage, 2)
+        }
+    }
+
+@app.get("/metrics")
+async def get_metrics(connection_manager: ConnectionManager = Depends(get_connection_manager)):
+    """Get application metrics."""
+    metrics = {
+        "timestamp": datetime.now().isoformat(),
+        "instance": {
+            "id": INSTANCE_ID,
+            "hostname": HOSTNAME
+        },
+        "connections": {
+            "active_connections": len(connection_manager.active_connections),
+            "active_sessions": len(connection_manager.session_connections)
+        },
+        "system": {
+            "platform": sys.platform,
+            "python_version": sys.version
+        },
+        "load_balancing": {
+            "max_connections": int(os.environ.get("MAX_CONNECTIONS", 1000)),
+            "weight": int(os.environ.get("INSTANCE_WEIGHT", 100))  # For load balancer weighting
+        }
+    }
+    
+    # Calculate capacity percentage
+    max_connections = metrics["load_balancing"]["max_connections"]
+    active_connections = metrics["connections"]["active_connections"]
+    capacity_percentage = (active_connections / max_connections) * 100 if max_connections > 0 else 0
+    metrics["load_balancing"]["capacity_percentage"] = round(capacity_percentage, 2)
+    
+    # Add database metrics
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM active_connections")
+        active_db_connections = cursor.fetchone()[0]
+        metrics["database"] = {
+            "active_connections": active_db_connections
+        }
+        conn.close()
+    except Exception as e:
+        metrics["database"] = {
+            "error": str(e)
+        }
+    
+    return metrics
 
 @app.get("/sessions/{user_id}")
 async def list_user_sessions(user_id: str, adk_manager: ADKManager = Depends(get_adk_manager)):
@@ -773,6 +1116,50 @@ async def delete_session(
         return {"message": "Session deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting session: {str(e)}")
+
+@app.post("/sessions/{user_id}/{session_id}/resume")
+async def create_session_resumption_token(
+    user_id: str,
+    session_id: str,
+    adk_manager: ADKManager = Depends(get_adk_manager)
+):
+    """Create a resumption token for a session."""
+    try:
+        token = await adk_manager.create_resumption_token(session_id, user_id)
+        return {
+            "token": token,
+            "session_id": session_id,
+            "expires_in": 24 * 60 * 60  # 24 hours in seconds
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating resumption token: {str(e)}")
+
+@app.post("/sessions/resume")
+async def resume_session(
+    token: str,
+    adk_manager: ADKManager = Depends(get_adk_manager)
+):
+    """Resume a session using a resumption token."""
+    try:
+        validation_result = await adk_manager.validate_resumption_token(token)
+        if validation_result.get("valid"):
+            # Token is valid, return session info
+            session_id = validation_result["session_id"]
+            user_id = validation_result["user_id"]
+            
+            # Get session history
+            history = await adk_manager.get_session_history(session_id, user_id)
+            
+            return {
+                "session_id": session_id,
+                "user_id": user_id,
+                "history": history,
+                "resumed": True
+            }
+        else:
+            raise HTTPException(status_code=400, detail=f"Invalid resumption token: {validation_result.get('reason')}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error resuming session: {str(e)}")
 
 @app.post("/chat/stream")
 async def chat_stream(
@@ -854,10 +1241,44 @@ async def websocket_endpoint(
     websocket: WebSocket, 
     session_id: str, 
     user_id: str = "default_user",
+    is_audio: str = "false",  # Query parameter to indicate audio mode
+    streaming_mode: str = "bidi",  # Query parameter for streaming mode
+    resume_token: Optional[str] = None,  # Query parameter for session resumption
     adk_manager: ADKManager = Depends(get_adk_manager),
     connection_manager: ConnectionManager = Depends(get_connection_manager)
 ):
     """WebSocket endpoint for real-time chat with the ADK agent."""
+    # Handle session resumption if token is provided
+    if resume_token:
+        try:
+            validation_result = await adk_manager.validate_resumption_token(resume_token)
+            if validation_result.get("valid"):
+                # Use the session from the token
+                session_id = validation_result["session_id"]
+                user_id = validation_result["user_id"]
+                # Invalidate the token as it's now used
+                await adk_manager.invalidate_resumption_token(resume_token)
+            else:
+                await websocket.accept()
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "content": f"Invalid resumption token: {validation_result.get('reason')}",
+                    "session_id": session_id,
+                    "timestamp": datetime.now().timestamp()
+                }))
+                await websocket.close()
+                return
+        except Exception as e:
+            await websocket.accept()
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "content": f"Error validating resumption token: {str(e)}",
+                "session_id": session_id,
+                "timestamp": datetime.now().timestamp()
+            }))
+            await websocket.close()
+            return
+    
     # Get or create session to ensure we have a valid session ID
     try:
         session = await adk_manager.get_or_create_session(user_id, session_id)
@@ -894,34 +1315,117 @@ async def websocket_endpoint(
             content=f"Connected to session {actual_session_id}",
             session_id=actual_session_id,
             timestamp=datetime.now().timestamp(),
-            metadata={"user_id": user_id, "connection_id": connection_id}
+            metadata={"user_id": user_id, "connection_id": connection_id, "is_audio": is_audio, "streaming_mode": streaming_mode}
         )
     )
+    
+    # If this is a resumed session, send the history
+    if resume_token:
+        try:
+            history = await adk_manager.get_session_history(actual_session_id, user_id)
+            if history:
+                await connection_manager.send_message(
+                    actual_session_id,
+                    WebSocketResponse(
+                        type="session_history",
+                        content=f"Session resumed with {len(history)} previous messages",
+                        session_id=actual_session_id,
+                        timestamp=datetime.now().timestamp(),
+                        metadata={"history": history, "resumed": True}
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Error sending session history: {e}")
     
     try:
         while True:
             # Receive message from client
-            data = await websocket.receive_text()
-            message_data = json.loads(data)
-            user_message = message_data.get("message", "").strip()
+            data = await websocket.receive()
             
-            if user_message:
-                logger.info(f"Processing message from {user_id} in session {actual_session_id}: {user_message[:50]}...")
+            # Handle both text and binary data
+            if "text" in data:
+                message_data = json.loads(data["text"])
+                user_message = message_data.get("message", "").strip()
+                mime_type = message_data.get("mime_type", "text/plain")
                 
-                # Process through ADK
-                agent_response = await adk_manager.process_message(
-                    actual_session_id, user_id, user_message, connection_manager
-                )
+                # Handle audio data
+                if mime_type == "audio/pcm" and "data" in message_data:
+                    # Process audio data (Base64 encoded)
+                    audio_data = message_data.get("data")
+                    logger.info(f"Processing audio data from {user_id} in session {actual_session_id}: {len(audio_data)} bytes")
+                    
+                    # Send audio acknowledgment
+                    await connection_manager.send_message(
+                        actual_session_id,
+                        WebSocketResponse(
+                            type="audio_received",
+                            content=f"Received audio data: {len(audio_data)} bytes",
+                            session_id=actual_session_id,
+                            timestamp=datetime.now().timestamp(),
+                            mime_type="audio/pcm",
+                            data=audio_data
+                        )
+                    )
+                elif user_message:
+                    logger.info(f"Processing message from {user_id} in session {actual_session_id}: {user_message[:50]}...")
+                    
+                    # Process through ADK based on streaming mode
+                    if streaming_mode == "bidi":
+                        # Use bidirectional streaming (existing implementation)
+                        agent_response = await adk_manager.process_message(
+                            actual_session_id, user_id, user_message, connection_manager
+                        )
+                        
+                        # Send agent response
+                        await connection_manager.send_message(
+                            actual_session_id,
+                            WebSocketResponse(
+                                type="message",
+                                content=agent_response,
+                                session_id=actual_session_id,
+                                timestamp=datetime.now().timestamp(),
+                                metadata={"user_message": user_message}
+                            )
+                        )
+                    elif streaming_mode == "sse":
+                        # Use SSE-like streaming
+                        # We'll stream the response as it comes in
+                        pass  # Implementation would go here
+                    else:
+                        # No streaming (regular request-response)
+                        agent_response = await adk_manager.process_message(
+                            actual_session_id, user_id, user_message, connection_manager
+                        )
+                        
+                        # Send agent response
+                        await connection_manager.send_message(
+                            actual_session_id,
+                            WebSocketResponse(
+                                type="message",
+                                content=agent_response,
+                                session_id=actual_session_id,
+                                timestamp=datetime.now().timestamp(),
+                                metadata={"user_message": user_message}
+                            )
+                        )
+            elif "bytes" in data:
+                # Handle binary data directly
+                binary_data = data["bytes"]
+                logger.info(f"Processing binary data from {user_id} in session {actual_session_id}: {len(binary_data)} bytes")
                 
-                # Send agent response
+                # Convert binary data to Base64 for transmission
+                base64_data = base64.b64encode(binary_data).decode("ascii")
+                
+                # Send audio data to agent
                 await connection_manager.send_message(
                     actual_session_id,
                     WebSocketResponse(
-                        type="message",
-                        content=agent_response,
+                        type="audio_received",
+                        content=f"Received binary audio data: {len(binary_data)} bytes",
                         session_id=actual_session_id,
                         timestamp=datetime.now().timestamp(),
-                        metadata={"user_message": user_message}
+                        mime_type="audio/pcm",
+                        data=base64_data
                     )
                 )
     
@@ -951,16 +1455,68 @@ async def websocket_endpoint(
 if __name__ == "__main__":
     import uvicorn
     
+    # Additional Windows-specific fixes for event loop
+    if sys.platform == 'win32':
+        # Ensure we're using the correct event loop policy
+        if not isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsSelectorEventLoopPolicy):
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            print("🔧 Windows: Set SelectorEventLoop policy for aiodns compatibility")
+    
+    # Get configuration from environment variables
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", 8000))
+    reload = os.environ.get("RELOAD", "false").lower() == "true"
+    log_level = os.environ.get("LOG_LEVEL", "info")
+    max_connections = int(os.environ.get("MAX_CONNECTIONS", 1000))
+    instance_weight = int(os.environ.get("INSTANCE_WEIGHT", 100))
+    
     print("🚀 Starting ADK Multi-Agent DevOps Orchestrator Server...")
     print(f"📁 Database: {DATABASE_PATH}")
-    print(f"🌐 Web interface: http://localhost:8000")
-    print(f"🔌 WebSocket endpoint: ws://localhost:8000/ws/{{session_id}}")
-    print(f"📡 Streaming endpoint: http://localhost:8000/chat/stream")
+    print(f"🌐 Web interface: http://{host if host != '0.0.0.0' else 'localhost'}:{port}")
+    print(f"🔌 WebSocket endpoint: ws://{host if host != '0.0.0.0' else 'localhost'}:{port}/ws/{{session_id}}")
+    print(f"📡 Streaming endpoint: http://{host if host != '0.0.0.0' else 'localhost'}:{port}/chat/stream")
+    print(f"📡 New SSE endpoint: http://{host if host != '0.0.0.0' else 'localhost'}:{port}/chat_sse")
+    print(f"📊 Metrics endpoint: http://{host if host != '0.0.0.0' else 'localhost'}:{port}/metrics")
+    print(f"🏥 Health check endpoints:")
+    print(f"   - Basic: http://{host if host != '0.0.0.0' else 'localhost'}:{port}/health")
+    print(f"   - Detailed: http://{host if host != '0.0.0.0' else 'localhost'}:{port}/health/detailed")
+    print(f"   - Liveness: http://{host if host != '0.0.0.0' else 'localhost'}:{port}/health/liveness")
+    print(f"   - Readiness: http://{host if host != '0.0.0.0' else 'localhost'}:{port}/health/readiness")
+    print(f"   - Load Balancer: http://{host if host != '0.0.0.0' else 'localhost'}:{port}/health/loadbalancer")
+    print(f"🔢 Instance ID: {INSTANCE_ID}")
+    print(f"🏠 Hostname: {HOSTNAME}")
+    print(f"⚖️  Instance weight: {instance_weight}")
+    print(f"🔗 Max connections: {max_connections}")
     
-    uvicorn.run(
-        "main:app",  # Assumes this file is named main.py
-        host="0.0.0.0",
-        port=8000,
-        reload=False,  # Set to False in production
-        log_level="info"
-    )
+    # Check environment variables before starting
+    if not os.environ.get("GOOGLE_API_KEY"):
+        print("⚠️  WARNING: GOOGLE_API_KEY not found in environment variables!")
+        print("   Please check your .env file or set the environment variable directly.")
+    
+    try:
+        uvicorn.run(
+            "main:app",  # Assumes this file is named main.py
+            host=host,
+            port=port,
+            reload=reload,  # Set to False in production
+            log_level=log_level,
+            loop="asyncio"  # Explicitly use asyncio loop
+        )
+    except Exception as e:
+        print(f"❌ Failed to start server: {e}")
+        if "aiodns" in str(e) and sys.platform == 'win32':
+            print("🔧 Windows aiodns issue detected. Trying alternative approach...")
+            # Try with different event loop configuration
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                uvicorn.run(
+                    "main:app",
+                    host=host,
+                    port=port,
+                    reload=reload,
+                    log_level=log_level
+                )
+            except Exception as e2:
+                print(f"❌ Alternative approach also failed: {e2}")
+                print("Please try installing/updating aiodns: pip install --upgrade aiodns")

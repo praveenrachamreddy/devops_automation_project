@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ADK Multi-Agent Chat</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .chat-container { border: 1px solid #ddd; height: 400px; overflow-y: scroll; padding: 10px; margin: 20px 0; background: #fafafa; border-radius: 4px; }
+        .message { margin: 10px 0; padding: 8px 12px; border-radius: 6px; }
+        .user-message { background: #007bff; color: white; margin-left: 20%; }
+        .agent-message { background: #e9ecef; margin-right: 20%; }
+        .system-message { background: #fff3cd; color: #856404; font-style: italic; }
+        .input-container { display: flex; gap: 10px; }
+        .input-container input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
+        .input-container button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .input-container button:hover { background: #0056b3; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; background: #d1ecf1; border-left: 4px solid #bee5eb; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 ADK Multi-Agent DevOps Orchestrator</h1>
+        <div class="status" id="status">Connecting...</div>
+        <div class="chat-container" id="chatContainer"></div>
+        <div class="input-container">
+            <input type="text" id="messageInput" placeholder="Type your DevOps question or command..." maxlength="1000">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+        <p><small>Session ID: <span id="sessionId">Generating...</span></small></p>
+    </div>
+
+    <script>
+        let ws = null;
+        let sessionId = generateSessionId();
+        const userId = 'web_user_' + Math.random().toString(36).substr(2, 9);
+        
+        document.getElementById('sessionId').textContent = sessionId;
+        
+        function generateSessionId() {
+            return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        }
+        
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/${sessionId}?user_id=${userId}`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                document.getElementById('status').textContent = '✅ Connected to ADK Multi-Agent System';
+                document.getElementById('status').style.background = '#d4edda';
+                document.getElementById('status').style.borderColor = '#c3e6cb';
+            };
+            
+            ws.onmessage = function(event) {
+                const response = JSON.parse(event.data);
+                handleMessage(response);
+            };
+            
+            ws.onclose = function() {
+                document.getElementById('status').textContent = '❌ Connection lost. Refresh to reconnect.';
+                document.getElementById('status').style.background = '#f8d7da';
+                document.getElementById('status').style.borderColor = '#f5c6cb';
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                document.getElementById('status').textContent = '❌ Connection error';
+            };
+        }
+        
+        function handleMessage(response) {
+            const chatContainer = document.getElementById('chatContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            
+            if (response.type === 'message') {
+                messageDiv.className += ' agent-message';
+                // Fix the regex issue by properly escaping backslashes in template literals
+                messageDiv.innerHTML = '<strong>🤖 DevOps Agent:</strong><br>' + response.content.replace(/\n/g, '<br>');
+            } else if (response.type === 'agent_thinking') {
+                messageDiv.className += ' system-message';
+                messageDiv.innerHTML = '💭 ' + response.content;
+                messageDiv.id = 'thinking-indicator';
+            } else if (response.type === 'agent_transfer') {
+                messageDiv.className += ' system-message';
+                messageDiv.style.background = '#e3f2fd';
+                messageDiv.style.borderLeft = '4px solid #2196f3';
+                messageDiv.innerHTML = '🔄 ' + response.content;
+            } else if (response.type === 'tool_call') {
+                messageDiv.className += ' system-message';
+                messageDiv.style.background = '#fff3e0';
+                messageDiv.style.borderLeft = '4px solid #ff9800';
+                messageDiv.innerHTML = '🔧 ' + response.content;
+            } else if (response.type === 'tool_response') {
+                messageDiv.className += ' system-message';
+                messageDiv.style.background = '#e8f5e9';
+                messageDiv.style.borderLeft = '4px solid #4caf50';
+                messageDiv.innerHTML = '✅ ' + response.content;
+            } else if (response.type === 'agent_response') {
+                messageDiv.className += ' agent-message';
+                // Fix the regex issue by properly escaping backslashes in template literals
+                messageDiv.innerHTML = response.content.replace(/\n/g, '<br>');
+            } else if (response.type === 'error') {
+                messageDiv.className += ' system-message';
+                messageDiv.style.background = '#f8d7da';
+                messageDiv.innerHTML = '❌ Error: ' + response.content;
+            }
+            
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            
+            // Remove thinking indicator when we get the actual response
+            if (response.type === 'message' || response.type === 'agent_response') {
+                const thinkingIndicator = document.getElementById('thinking-indicator');
+                if (thinkingIndicator) {
+                    thinkingIndicator.remove();
+                }
+            }
+        }
+        
+        function addUserMessage(message) {
+            const chatContainer = document.getElementById('chatContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message user-message';
+            // Fix the regex issue by properly escaping backslashes in template literals
+            messageDiv.innerHTML = '<strong>👤 You:</strong><br>' + message.replace(/\n/g, '<br>');
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (message && ws && ws.readyState === WebSocket.OPEN) {
+                addUserMessage(message);
+                ws.send(JSON.stringify({
+                    message: message,
+                    session_id: sessionId,
+                    user_id: userId
+                }));
+                input.value = '';
+            }
+        }
+        
+        // Event listeners
+        document.getElementById('messageInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+        
+        // Connect on page load
+        connectWebSocket();
+        
+        // Add welcome message
+        setTimeout(() => {
+            const chatContainer = document.getElementById('chatContainer');
+            const welcomeDiv = document.createElement('div');
+            welcomeDiv.className = 'message system-message';
+            welcomeDiv.innerHTML = `🚀 Welcome to the ADK Multi-Agent DevOps Orchestrator!<br>
+            I can help you with:<br>
+            • Web searches and research<br>
+            • Code analysis and development<br>
+            • Elasticsearch operations<br>
+            • Kubernetes management<br>
+            • Infrastructure automation<br>
+            • CI/CD pipelines<br>
+            • System monitoring<br>
+            • And much more!<br><br>
+            Ask me anything about your DevOps needs!`;
+            chatContainer.appendChild(welcomeDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }, 500);
+    </script>
+</body>
+</html>

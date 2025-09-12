@@ -31,7 +31,7 @@ devops_settings:
   monitoring:
     # Example for Prometheus/Thanos
     thanos_url: "https://thanos-querier-openshift-monitoring.apps.ocp4.imss.work"
-    thanos_token: "sha256~R8OUMMtj9dGBrvFyx1jtMr4oXobwMgCHBppyobJ8xG0"  # Use token for authentication
+    thanos_token: "sha256~s0noBIc4fwjTltA6B9usGnx8zD6S5i57giILHhJELB0"  # Use token for authentication
     ssl_verify: false  # Set to true if using valid SSL certificates
     timeout: 30
     
@@ -45,7 +45,7 @@ devops_settings:
     api_url: "https://api.ocp4.imss.work:6443"
     username: "ocpadmin"
     password: "oShift@123"
-    token: "sha256~R8OUMMtj9dGBrvFyx1jtMr4oXobwMgCHBppyobJ8xG0"  # Use token instead of username/password if preferred
+    token: "sha256~s0noBIc4fwjTltA6B9usGnx8zD6S5i57giILHhJELB0"  # Use token instead of username/password if preferred
     kubeconfig_path: "~/.kube/config"
     # For OpenShift clusters, you might need:
     # openshift_api_url: "https://api.your-cluster.example.com:6443"
